@@ -1,0 +1,649 @@
+ using paseo on iphone, i was able to import Codex and Claude sessions from my   laptop (this machine). however, iphone-paseo is not updating the laptop         sessions. whatever i type in codex or claude code on my laptop is not synced    in my iphone paseo corresponding sessions. could you root cause why from the    codebase or paseo docs ? what am i missing in my setup ?
+
+✢ Transmuting…
+
+─────────────────────────────────────────────────────────────────────── paseo ──
+> 
+────────────────────────────────────────────────────────────────────────────────
+  | Opus 4.8 (1M context) | understanding-paseo | ctx 17% | 5h 16% | 7d 31% |
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+
+ using paseo on iphone, i was able to import Codex and Claude sessions from my   laptop (this machine). however, iphone-paseo is not updating the laptop         sessions. whatever i type in codex or claude code on my laptop is not synced    in my iphone paseo corresponding sessions. could you root cause why from the    codebase or paseo docs ? what am i missing in my setup ?
+
+● Good, concrete question. Let me root-cause it from the code rather than guess.
+  The key thing to verify: after you import a session, does the daemon keep
+  watching the provider's on-disk session file for activity that originates
+  outside Paseo (i.e., you typing in a separate claude/codex terminal)? Let me
+  check whether any live file-watching exists.
+  outside Paseo (i.e., you typing in a separate claude/codex terminal)? Let me
+  check whether any live file-watching exists.
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● The watcher grep is mostly false positives (tail matched "detail", watch
+  matched test files). Let me read the actual import/resume path to see what the
+  daemon does — and crucially whether it streams from its own provider process
+  or tails the file.
+
+  Read 1 file (ctrl+o to expand)
+
+● Found it. The comment at lines 874-879 is the smoking gun. Let me read
+  hydrateTimelineFromProvider and the reload command to confirm the remediation
+  precisely.
+
+  Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● The design is now explicit in the code. Let me confirm one remediation detail:
+  whether "Reload agent" actually re-reads from disk (rehydrateFromDisk), since
+  that determines whether reload can even pull in your terminal edits.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● The e2e test agent-refresh-rehydrates-timeline.e2e.test.ts is the key — it
+  tests refresh on an imported agent. Let me confirm how refresh_agent_request
+  maps to rehydration on the server.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Root-caused. It's not a misconfiguration — it's how import is designed to
+  work. You're missing one assumption about what "import" means, not a setting.
+
+  The verdict
+
+  Paseo does not live-watch the provider session files on disk. Importing a
+  Codex/Claude session takes a one-time snapshot and then runs Paseo's own
+  provider process. Anything you type into a separate claude/codex terminal on
+  the laptop is a different process writing to disk that Paseo neither tails nor
+  merges. Live updates in Paseo only reflect work that flows through Paseo.
+
+  The mental-model gap
+
+  You're treating "import" as "mirror my live terminal session." In the code it
+  actually means "take over / resume this conversation as a Paseo-controlled
+  agent." After import there are effectively two independent conversations:
+
+  ┌──────────────────────────┬────────────────────────┬─────────────────────┐
+  │      Where you type      │       What it is       │ Does Paseo see it   │
+  │                          │                        │        live?        │
+  ├──────────────────────────┼────────────────────────┼─────────────────────┤
+  │ In a Paseo client        │ Paseo's own provider   │ ✅ Yes — streamed   │
+  │ (phone/web/CLI)          │ process                │ to all clients      │
+  ├──────────────────────────┼────────────────────────┼─────────────────────┤
+  │ In a separate            │ A different process on │ ❌ No — not         │
+  │ claude/codex terminal    │  the same machine      │ watched, not merged │
+  └──────────────────────────┴────────────────────────┴─────────────────────┘
+
+  The proof from the codebase
+
+  Three facts, each from the source:
+
+  1. Import = snapshot + resume, not a live feed. importProviderSession calls
+  resumeAgentFromPersistence (starts Paseo's own process) then
+  hydrateTimelineFromProvider — which reads provider history exactly once
+  (packages/server/src/server/agent/import-sessions.ts:172-181).
+
+  2. There is no file watcher. Nothing in the daemon does fs.watch/tail on
+  ~/.claude/projects or ~/.codex/sessions. Updates come from the provider
+  process Paseo controls — not from observing the file.
+
+  3. The code says external edits need a manual reload — in a comment, verbatim
+  (agent-manager.ts:874-879):
+
+  ▎ "When rehydrateFromDisk is set, the timeline is wiped so a new epoch is
+  ▎ minted and provider history is re-streamed — this is what the user-facing
+  ▎ 'Reload agent' action wants when the on-disk session was mutated outside
+  ▎ Paseo."
+
+  And that "Reload agent" path (session.ts:3343 → reloadAgentSession(agentId, {
+  rehydrateFromDisk: true })) is the only mechanism that re-reads the disk after
+  an external change. It's a one-shot re-read, not continuous sync.
+
+  ★ Insight ─────────────────────────────────────
+  This is a direct consequence of the architecture in your new docs: the daemon
+  reads provider session files, it doesn't subscribe to them. Reading-on-demand
+  is cheap and lock-free (great for the "list recent sessions" feature);
+  live-tailing would mean watching every provider's log format for external
+  writes and reconciling two processes editing the same conversation — which is
+  exactly the divergence Paseo avoids by having you drive the agent through it.
+  ─────────────────────────────────────────────────
+
+  What to do
+
+  Option A — drive the conversation from Paseo (recommended). After importing,
+  send your follow-ups from the Paseo app/CLI, not from the laptop terminal.
+  Then every device stays in sync automatically. Treat import as "I'm moving
+  this conversation into Paseo now."
+
+  Option B — keep using the terminal, then manually pull changes. If you want to
+  keep typing in the laptop claude/codex terminal, you must explicitly re-read
+  the disk to see those messages in Paseo:
+
+  paseo agent reload <agent-id>
+
+  (or the "Reload agent" action in the app). This re-hydrates the imported
+  agent's timeline from the current on-disk state. It is manual and one-shot —
+  you re-run it each time you want to catch up. There is no toggle for automatic
+  live external sync — so you're not missing a setting that would enable it.
+
+  One caveat to be aware of
+
+  Running both at once — the live terminal session and the imported Paseo agent
+  — on the same conversation is asking for trouble. They're two processes; once
+  you send a message through Paseo, its agent and your terminal session can
+  diverge into separate branches, and reload only ever reflects whatever is
+  currently on disk for that session handle. Pick one driver per conversation.
+
+  Want me to capture this in the docs I just wrote — e.g. an "Importing is not
+  live mirroring" section in how-paseo-finds-your-sessions.md plus a
+  troubleshooting entry? It's a common enough trap that it belongs there.
+
+✻ Churned for 3m 14s
+
+※ recap: You installed Paseo and connected your iPhone, then learned imported
+  sessions don't live-sync with your laptop terminals. Next: decide whether I
+  should add an "import isn't live mirroring" note to the docs I wrote. (disable
+  recaps in /config)
+
+>  Want me to capture this in the docs I just wrote — e.g. an "Importing is not     live mirroring" section in how-paseo-finds-your-sessions.md plus a              troubleshooting entry? It's a common enough trap that it belongs there.     
+
+
+● Yes — capturing it. I'll add a conceptual section to
+  how-paseo-finds-your-sessions.md and a matching troubleshooting entry in
+  quickstart.md.
+
+● Update(how-paseo-finds-your-sessions.md)
+  ⎿  Added 32 lines
+       74
+       75  ---
+       76
+       77 +## Importing is not live mirroring
+       78 +
+       79 +This is the trap that catches almost everyone, so it's worth s
+          +tating bluntly: **importing a session does not turn Paseo into
+          + a live window onto your terminal.**
+       80 +
+       81 +Import takes a **one-time snapshot** of the conversation as it
+          + stood on disk, then **resumes it as a fresh agent that Paseo
+          +itself runs.** From that moment, the imported agent is a *sepa
+          +rate* live conversation, driven by a process the daemon contro
+          +ls.
+       82 +
+       83 +The consequence surprises people:
+       84 +
+       85 +- **Messages you send from Paseo** flow through the daemon's p
+          +rocess and sync to every connected device instantly. That part
+          + feels magic and works.
+       86 +- **Messages you type into a separate `claude` or `codex` term
+          +inal on the same laptop** go to a *different* process writing
+          +to disk. Paseo is **not watching that file**, so those message
+          +s do **not** appear in the imported agent — not on your phone,
+          + not anywhere.
+       87 +
+       88 +There is no background file-watcher, and there is **no setting
+          + to enable automatic live sync from an outside terminal.** It'
+          +s a deliberate design choice: the daemon *reads* session files
+          + on demand (cheap, no locks), it doesn't *subscribe* to them (
+          +which would mean two processes fighting over one conversation)
+          +.
+       89 +
+       90 +### What to do instead
+       91 +
+       92 +Pick one of two clear paths — don't run both at once on the sa
+          +me conversation:
+       93 +
+       94 +| You want to… | Do this |
+       95 +| ------------ | ------- |
+       96 +| Continue the conversation everywhere, in sync | After import
+          +ing, send follow-ups **from a Paseo client** (phone, web, or C
+          +LI). Treat import as "this conversation now lives in Paseo." |
+       97 +| Keep using the laptop terminal, but peek from Paseo occasion
+          +ally | Type in the terminal, then **manually pull the latest d
+          +isk state** into Paseo with the **Reload agent** action — or f
+          +rom the CLI: |
+       98 +
+       99 +```bash
+      100 +paseo agent reload <agent-id>
+      101 +```
+      102 +
+      103 +**Reload** wipes the imported agent's timeline and re-reads th
+          +e current session file from scratch. It's **manual and one-sho
+          +t** — run it again each time you want to catch up. It is not a
+          + live feed.
+      104 +
+      105 +> **Don't drive one conversation from two places.** Running th
+          +e live terminal session *and* the imported Paseo agent at the
+          +same time means two processes editing the same conversation; t
+          +hey can diverge into separate branches, and **Reload** only ev
+          +er shows whatever is on disk for that session right now. Pick
+          +one driver per conversation.
+      106 +
+      107 +---
+      108 +
+      109  ## The two buckets, one more time
+      110
+      111  This is the whole model in a table. Most confusion disappears
+           once you separate these:
+
+● Now the troubleshooting entry in quickstart.md, in the existing "If something
+  goes wrong" section.
+
+● Update(quickstart.md)
+  ⎿  Added 2 lines
+      172  **`Cannot connect to daemon`** — the daemon isn't running. Sta
+           rt it with `paseo daemon start`, then retry.
+      173
+      174  **A provider shows `--version failed` in `paseo daemon status`
+           ** — Paseo found the agent CLI but couldn't read its version (
+           common on Windows with `.EXE`/`.CMD` wrappers). It will usuall
+           y still run. Confirm by running that CLI directly (e.g. `claud
+           e --version`); if that works on its own, the agent will work i
+           n Paseo too.
+      175 +
+      176 +**An imported session doesn't update when I type in my laptop'
+          +s `claude`/`codex` terminal** — expected, not a bug. Import ta
+          +kes a one-time snapshot and then runs Paseo's *own* agent proc
+          +ess; your separate terminal is a different process that Paseo
+          +doesn't watch. Either send follow-ups **from Paseo** (so every
+          +thing stays in sync), or, if you keep typing in the terminal,
+          +manually pull the latest disk state with `paseo agent reload <
+          +agent-id>` (one-shot, not live). Full explanation: [how Paseo
+          +finds your sessions → importing is not live mirroring](how-pas
+          +eo-finds-your-sessions.md#importing-is-not-live-mirroring). Th
+          +ere is no setting for automatic live sync from an outside term
+          +inal.
+
+● Both captured. Let me quickly verify the new section heading and the anchor
+  link match.
+
+● Bash(cd "C:\Users\simon\Downloads\paseo_brandon_melville\paseo-main\docs\under
+      standing-paseo" && echo "=== New section heading ===" && grep -n
+      "Importing is not live…)
+  ⎿  === New section heading ===
+     77:## Importing is not live mirroring
+     … +14 lines (ctrl+o to expand)
+
+● Done. Both docs updated and verified.
+
+  What I added
+
+  how-paseo-finds-your-sessions.md → new section "Importing is not live
+  mirroring" (between "Importing: the deliberate step" and "The two buckets").
+  It states the trap bluntly, explains the snapshot-and-resume behavior,
+  contrasts Paseo-driven vs terminal-driven messages in a table, gives the two
+  clear paths (drive from Paseo, or manual paseo agent reload), and warns
+  against running both at once.
+
+  quickstart.md → new troubleshooting entry under "If something goes wrong",
+  with the one-line fix and a deep-link to the full section.
+
+  Cross-link verified: the anchor #importing-is-not-live-mirroring correctly
+  resolves to the new ## Importing is not live mirroring heading (GitHub slug
+  rules: lowercased, spaces → hyphens). No stubs.
+
+  ★ Insight ─────────────────────────────────────
+  Why this entry earns its place in the docs: it converts a silent, confusing
+  behavior ("my messages just vanish") into an expected, explained one with a
+  named fix. The conventions guide ranks troubleshooting entries by how the user
+  would describe the symptom — so the heading is literally "An imported session
+  doesn't update when I type in my laptop's terminal," not "session sync
+  semantics." A frustrated reader searches for their symptom, not your subsystem
+  name.
+  ─────────────────────────────────────────────────
+
+  The "Understanding Paseo" guide is now self-correcting on the single most
+  likely point of confusion for a new user — which, fittingly, is the exact one
+  you hit. The full set sits in docs/understanding-paseo/, entry point index.md.
+
+  One thing still unwired from earlier: I offered to add a one-line pointer to
+  this guide from the main README.md or the CLAUDE.md docs table so it's
+  discoverable. Want me to do that now?
+
+✻ Cooked for 1m 32s
+✻ Cooked for 1m 32s
+
+> how do i terminate the sessions on iphone-paseo ?
+
+● Let me ground this in the actual mobile UI rather than guess at labels. Let me
+  find how the app exposes stop/archive/delete on an agent.
+
+  Searched for 4 patterns (ctrl+o to expand)
+
+● I have the exact mobile behavior. Let me confirm the "Stop" (interrupt)
+  control label and whether the app also offers a permanent delete, to give you
+  the full picture.
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● Here's how, grounded in the app's actual behavior. "Terminate" can mean two
+  different things in Paseo, so match the gesture to what you want:
+
+  The two gestures
+
+  You want to…: Pause the work, keep the conversation
+  Do this on iPhone: Tap the Stop button (the square ⏹ that replaces Send while
+    the agent is running; tooltip "Interrupt")
+  What it does: Interrupts the current turn only. The agent stays in your list;
+    you can send another message.
+  ────────────────────────────────────────
+  You want to…: End the session and clear it from your list
+  Do this on iPhone: Close the agent's tab (the ✕ on its tab)
+  What it does: Archives it — this is the real "terminate." It stops the agent
+    and removes it from the active list.
+
+  For your imported Codex/Claude sessions (they're standalone "root" agents),
+  the one you want is close the tab → Archive.
+
+  What happens when you archive
+
+  If the agent is still running, the app shows a confirm dialog before doing
+  anything:
+
+  ▎ Archive running agent?
+  ▎ This agent is still running. Archiving it will stop the agent and close the
+  ▎ tab.
+  ▎ [Archive]
+
+  Confirming stops the agent's process and removes it from your active agents.
+  Verified in workspace-screen.tsx:2414 (handleCloseAgentTab → archive-on-close)
+  and agent-lifecycle.md: archive closes the runtime (kills the process if
+  running) and is a soft delete — the record stays on disk with an archivedAt
+  timestamp, so it's recoverable, not gone forever.
+
+  ★ Insight ─────────────────────────────────────
+  This ties directly to the import nuance from earlier: archiving on your iPhone
+  stops the process Paseo started for that imported agent. It does not touch a
+  separate claude/codex you might still have open in a laptop terminal — that's
+  a different process Paseo never controlled. So "terminate on iPhone" ends the
+  Paseo side only; close the terminal one yourself if it's also running.
+  ─────────────────────────────────────────────────
+
+  If you want it gone permanently
+
+  Archive is a soft delete (recoverable). For a hard delete, use the CLI on your
+  laptop:
+
+  paseo ls -a              # list including archived, to find the id
+  paseo delete <agent-id>  # interrupts if running, then removes the record
+
+  Quick decision guide
+
+  - Just stop it mid-task → Stop / Interrupt (square button in the composer).
+  - Done with the imported session, declutter your list → close its tab →
+  Archive.
+  - Want it permanently removed → CLI paseo delete <id>.
+
+  Want me to add a short "Ending and removing sessions" section to the
+  understanding-paseo docs (the Stop vs Archive vs Delete distinction)? It pairs
+  naturally with the import section we just wrote.
+
+✻ Worked for 1m 47s
+
+※ recap: You installed Paseo's CLI and wrote a beginner docs set under
+  docs/understanding-paseo/. Most recently I explained how to terminate iPhone
+  sessions: close the agent's tab to Archive it. Next, optionally add an "Ending
+  and removing sessions" section to those docs.
+
+─────────────────────────────────────────────────────────────────────── paseo ──
+> 
+────────────────────────────────────────────────────────────────────────────────
+  | Opus 4.8 (1M context) | understanding-paseo | ctx 21% | 5h 19% | 7d 32% |
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+
+>  Want me to add a short "Ending and removing sessions" section to the             understanding-paseo docs (the Stop vs Archive vs Delete distinction)? It      pairs                                                                             naturally with the import section we just wrote.
+
+● On it — adding an "Ending and removing a session" section near the end of
+  how-paseo-finds-your-sessions.md, plus two glossary entries so the terms are
+  defined before use.
+
+● Update(how-paseo-finds-your-sessions.md)
+  ⎿  Added 35 lines
+      133
+      134  ---
+      135
+      136 +## Ending and removing a session
+      137 +
+      138 +When you're done with an agent — imported or not — Paseo gives
+          + you three distinct actions. They're easy to mix up, so match
+          +the gesture to what you actually want.
+      139 +
+      140 +| Action | Where to do it | What it does | Reversible? |
+      141 +| ------ | -------------- | ------------ | ----------- |
+      142 +| **Stop** (interrupt) | The ⏹ button in the composer while th
+          +e agent is running | Halts the *current turn* only. The agent
+          +and its conversation stay; you can send another message. | n/a
+          + — it's a pause, not a removal |
+      143 +| **Archive** | Close the agent's tab (the ✕ on its tab) | End
+          +s the session: stops the agent's process **and** removes it fr
+          +om your active list. This is the everyday "I'm done with this"
+          + gesture. | Yes — it's a soft delete; the record stays on disk
+          + and can be brought back |
+      144 +| **Delete** | The `paseo delete` command | Permanently remove
+          +s the agent record. | No |
+      145 +
+      146 +**Stop** is a pause. **Archive** is the real "terminate." **De
+          +lete** is permanent.
+      147 +
+      148 +### Archiving, step by step
+      149 +
+      150 +On the phone, close the agent's tab. If the agent is still wor
+          +king, Paseo asks first:
+      151 +
+      152 +> **Archive running agent?** This agent is still running. Arch
+          +iving it will stop the agent and close the tab.
+      153 +
+      154 +Confirm, and the agent's process stops and it leaves your acti
+          +ve list. Because archive is a **soft delete**, the conversatio
+          +n isn't destroyed — it's hidden. You can list archived agents
+          +and revive one later.
+      155 +
+      156 +### The one thing to remember for imported sessions
+      157 +
+      158 +Archiving stops **the process Paseo runs** for that agent. It
+          +does **not** touch a separate `claude` or `codex` you may stil
+          +l have open in a laptop terminal — that's a different process
+          +Paseo never controlled. If you imported a session *and* kept t
+          +he terminal one running, ending it on your phone closes the Pa
+          +seo side only; close the terminal one yourself if you want bot
+          +h gone.
+      159 +
+      160 +### From the command line
+      161 +
+      162 +```bash
+      163 +paseo stop <agent-id>      # interrupt a running agent (a paus
+          +e)
+      164 +paseo archive <agent-id>   # end it and remove from active lis
+          +t (recoverable)
+      165 +paseo delete <agent-id>    # permanent removal (interrupts fir
+          +st if running)
+      166 +paseo ls -a                # list everything, including archiv
+          +ed, to find an id
+      167 +```
+      168 +
+      169 +---
+      170 +
+      171  ## Where to go next
+      172
+      173  - The other half people confuse this with: [how pairing works]
+           (how-pairing-works.md)
+
+● Now the two glossary entries so "archive" and "interrupt" are defined before
+  use.
+
+● Update(key-concepts.md)
+  ⎿  Added 6 lines
+      37
+      38  **Import** — The act of telling Paseo to adopt a provider sessi
+          on you started elsewhere. If you chatted with `claude` in a ter
+          minal yesterday, that conversation is sitting in a file. Import
+          ing it pulls that conversation into Paseo so you can continue i
+          t from the app. Import is always something *you* choose to do —
+           Paseo never silently takes over your conversations. See [how P
+          aseo finds your sessions](how-paseo-finds-your-sessions.md).
+      39
+      40 +**Stop (interrupt)** — Halting an agent's *current turn* withou
+         +t ending it. The agent and its conversation stay; you can send
+         +a new message. It's a pause, not a removal. In the app it's the
+         + ⏹ button that replaces Send while the agent is running.
+      41 +
+      42 +**Archive** — Ending an agent and removing it from your active
+         +list, while keeping its record on disk so it can be brought bac
+         +k later (a "soft delete"). This is the everyday "I'm done with
+         +this" action; on the phone you trigger it by closing the agent'
+         +s tab. Archiving stops the agent's process. It is **not** the s
+         +ame as **delete**. See [ending and removing a session](how-pase
+         +o-finds-your-sessions.md#ending-and-removing-a-session).
+      43 +
+      44 +**Delete** — Permanently removing an agent record. Unlike **arc
+         +hive**, it cannot be undone. Done from the command line with `p
+         +aseo delete`.
+      45 +
+      46  **`PASEO_HOME`** — The folder where the daemon keeps its own da
+          ta: the agents *it* launched, its settings, its logs, and its i
+          dentity key. By default this is `~/.paseo` (a hidden `.paseo` f
+          older in your home directory). It is separate from where the pr
+          ovider CLIs save their sessions (Claude uses `~/.claude`, Codex
+           uses `~/.codex`).
+      47
+      48  ---
+
+● Let me validate the new anchors and confirm no stubs.
+
+● Bash(cd "C:\Users\simon\Downloads\paseo_brandon_melville\paseo-main\docs\under
+      standing-paseo" && echo "=== Heading ===" && grep -n "## Ending and
+      removing a session"…)
+  ⎿  === Heading ===
+     136:## Ending and removing a session
+     === Anchor refs ===
+     … +9 lines (ctrl+o to expand)
+                                                                                ● Done and verified.
+                                                                                  What I added
+
+  how-paseo-finds-your-sessions.md → new "Ending and removing a session" section
+  (before "Where to go next"), with:
+  - A three-row table: Stop (pause the turn) vs Archive (end + remove,
+  recoverable) vs Delete (permanent).
+  - The archive confirm-dialog flow as it appears on the phone.
+  - The imported-session caveat: archiving stops Paseo's process only, not a
+  separate terminal session.
+  - The CLI equivalents (paseo stop / archive / delete / ls -a).
+
+  key-concepts.md → three new glossary entries (Stop (interrupt), Archive,
+  Delete), so every term is defined before it's used, and Archive deep-links to
+  the new section.
+
+  Validation: the #ending-and-removing-a-session anchor resolves to the new
+  heading, no stubs.
+
+  ★ Insight ─────────────────────────────────────
+  The trio maps cleanly onto the lifecycle model in the codebase: Stop =
+  interrupt the current turn (the agent stays idle, ready for the next prompt);
+  Archive = the daemon's soft delete (archivedAt set, runtime closed, record
+  kept — globally, across all your devices); Delete = hard removal. That
+  "Archive is global, tabs are per-client" distinction (agent-lifecycle.md) is
+  exactly why closing the tab on your iPhone removes the agent everywhere, while
+  merely viewing it doesn't — the docs now teach the same boundary the code
+  enforces.
+  ─────────────────────────────────────────────────
+
+  The understanding-paseo guide now covers the full arc you walked through:
+  connect (pairing) → discover (sessions) → the live-mirroring trap →
+  end/remove.
+
+  Still outstanding from earlier — the only thing not yet wired up: a one-line
+  pointer to this guide from the main README.md or the CLAUDE.md docs table, so
+  a future reader can find it. Want that added?
+
+✻ Baked for 1m 45s
+
+※ recap: You wanted Paseo installed and demystified; it's installed, your phone   is paired, and I wrote a beginner guide in docs/understanding-paseo covering
+  pairing, session discovery, and ending sessions. Next: optionally link that
+  guide from README.md or CLAUDE.md.
+
+─────────────────────────────────────────────────────────────────────── paseo ──
+> 
+────────────────────────────────────────────────────────────────────────────────
+  | Opus 4.8 (1M context) | understanding-paseo | ctx 22% | 5h 21% | 7d 32% |
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+ where are the docs that you generated ?
+
+● They're in your local Paseo checkout, in a new understanding-paseo folder
+  under docs/:
+
+  C:\Users\simon\Downloads\paseo_brandon_melville\paseo-main\docs\understanding-  paseo\
+
+  Let me show you the exact contents as they stand right now:
+
+● Bash(cd "C:\Users\simon\Downloads\paseo_brandon_melville\paseo-main\docs\under
+      standing-paseo" && ls -la *.md | awk '{print $5"\t"$NF}')
+  ⎿  6549       how-pairing-works.md
+     10894      how-paseo-finds-your-sessions.md
+     2254       index.md
+     … +4 lines (ctrl+o to expand)
+
+● All 7 files are here (sizes shown so you can see they're real content, not
+  stubs):
+
+  ┌──────────────────────────────────┬──────┬───────────────────────────────┐
+  │               File               │ Size │        What it covers         │
+  ├──────────────────────────────────┼──────┼───────────────────────────────┤
+  │ index.md                         │ 2.3  │ Start here — navigation hub,  │
+  │                                  │ KB   │ two reading routes            │
+  ├──────────────────────────────────┼──────┼───────────────────────────────┤
+  │ quickstart.md                    │ 6.7  │ Install → pair phone → first  │
+  │                                  │ KB   │ agent (+ troubleshooting)     │
+  ├──────────────────────────────────┼──────┼───────────────────────────────┤
+  │ what-is-paseo.md                 │ 7.8  │ The mental model: daemon +    │
+  │                                  │ KB   │ remote controls               │
+  ├──────────────────────────────────┼──────┼───────────────────────────────┤
+  │ key-concepts.md                  │ 8.2  │ Every term defined in plain   │
+  │                                  │ KB   │ English                       │
+  ├──────────────────────────────────┼──────┼───────────────────────────────┤
+  │ how-pairing-works.md             │ 6.5  │ The QR code + encryption,     │
+  │                                  │ KB   │ demystified                   │
+  ├──────────────────────────────────┼──────┼───────────────────────────────┤
+  │                                  │ 10.9 │ Session discovery, the        │
+  │ how-paseo-finds-your-sessions.md │  KB  │ live-mirroring trap, ending   │
+  │                                  │      │ sessions                      │
+  ├──────────────────────────────────┼──────┼───────────────────────────────┤
+  │ security.md                      │ 7.8  │ Full safety model, honest     │
+  │                                  │ KB   │ limits                        │
+  └──────────────────────────────────┴──────┴───────────────────────────────┘
+
+  Full path:
+  C:\Users\simon\Downloads\paseo_brandon_melville\paseo-main\docs\understanding-
+  paseo\
+
+  How to open them
+
+  They're plain Markdown — readable in any text editor, but they look best
+  rendered (tables, the ASCII diagram, links all display properly):
+
+  # Open the folder in Windows Explorer (from Git Bash)
+  start "" "C:\Users\simon\Downloads\paseo_brandon_melville\paseo-main\docs\unde
+  rstanding-paseo"
+
+  # Or open the entry point directly in your default Markdown app / browser
+  start "" "C:\Users\simon\Downloads\paseo_brandon_melville\paseo-main\docs\unde
+  rstanding-paseo\index.md"
+
+  ▎ Tip: Begin with index.md — it links to everything else in reading order. If
+  ▎ you'd rather read rendered Markdown with working links, open the folder in
+  ▎ VS Code (code . from inside it) and press Ctrl+Shift+V on any file to
+  ▎ preview it.
+
+  These sit alongside — not on top of — the project's existing developer docs in
+  docs/, so nothing was overwritten. The only thing still not done (from my
+  earlier offer) is adding a one-line pointer to this guide from the top-level
+  README.md or CLAUDE.md docs table, so others would stumble on it. Want that
+  added?
+
+✻ Baked for 35s
+
+─────────────────────────────────────────────────────────────────────── paseo ──
+> 
+────────────────────────────────────────────────────────────────────────────────
+  | Opus 4.8 (1M context) | understanding-paseo | ctx 22% | 5h 21% | 7d 32% |
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+

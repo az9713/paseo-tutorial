@@ -1,0 +1,310 @@
+ recap: Goal: use Paseo to control Claude Code from your iPhone. The CLI is
+  installed; pairing is relay-based and works from anywhere. Next: run "paseo
+  onboard" in git bash, then scan the QR with the Paseo iOS app. (disable recaps
+  in /config)
+
+> /technical-docs-writer demystify how paseo works. special interest in         security (https://paseo.sh/docs/security), and how paseo is aware of all agent  sessions (claude, codex ...) from say my laptop by scanning one QR code. the    whole paseo app is like magic to me. please demystify its inner working in easy to understand language. if technical terms are used, please define and explain  them first before use. assume no prior technical experience in this kind of     app but readers are very eager to master and eager to leverage and deploy the   knowledge for new projects. make their onboarding as quickest and painless as   possible.
+
+✶ Nucleating…
+
+─────────────────────────────────────────────────────────────────────── paseo ──
+> 
+────────────────────────────────────────────────────────────────────────────────
+  | Opus 4.8 (1M context) | paseo-main | ctx 10% | 5h 6% | 7d 30% |
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+
+ /technical-docs-writer demystify how paseo works. special interest in         security (https://paseo.sh/docs/security), and how paseo is aware of all agent  sessions (claude, codex ...) from say my laptop by scanning one QR code. the    whole paseo app is like magic to me. please demystify its inner working in easy to understand language. if technical terms are used, please define and explain  them first before use. assume no prior technical experience in this kind of     app but readers are very eager to master and eager to leverage and deploy the   knowledge for new projects. make their onboarding as quickest and painless as   possible.
+
+● I'll follow the technical-docs-writer process: audit first, then plan the
+  information architecture, then write complete docs. Let me start by reading
+  the skill's style references and auditing the codebase — with special focus on
+  the two things you care about: security and how Paseo discovers your agent
+  sessions.
+
+  Read 3 files (ctrl+o to expand)
+
+● SECURITY.md is rich — that covers the security half thoroughly. Now the other
+  half you're curious about: how Paseo becomes aware of your agent sessions.
+  That's a different mechanism from the QR code. Let me dig into the actual
+  discovery/import code and the agent lifecycle.
+
+  Read 2 files (ctrl+o to expand)
+
+● Now the central mystery you asked about — how Paseo "knows" about your
+  Claude/Codex sessions. Let me trace the actual discovery and import code in
+  the daemon.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+                                                                                ● import-sessions.ts is the heart of it. Let me read how the daemon discovers
+  provider sessions on disk.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+  ⎿  Loaded packages\server\CLAUDE.md
+
+● Let me find where the daemon actually scans the provider session directories —  that's the literal mechanism behind the "magic."
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Let me confirm the Claude provider literally reads ~/.claude/projects/. This
+  is the concrete proof of the mechanism.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Let me read the actual listPersistedAgents implementation to capture the
+  precise mechanism.
+
+  Read 1 file (ctrl+o to expand)
+
+● I have the full picture now. Let me check the glossary for terminology          consistency before writing.
+
+  Read 1 file (ctrl+o to expand)
+
+● I now have the complete mechanism, end to end, grounded in the actual source: 
+  - Security/pairing: SECURITY.md + daemon/pair.ts + import-sessions.ts
+  (Curve25519 keypair, QR carries public key in URL fragment, XSalsa20-Poly1305   E2E encryption).
+  - Session discovery: the real "magic" — agent-manager.ts:615 fans out to each
+  provider's listPersistedAgents(), and claude/agent.ts:1354 literally reads
+  ~/.claude/projects/. The daemon sees your sessions because they're files on
+  the same disk, not because the QR scanned anything.
+
+  Before I write 7 docs, let me get a second opinion on the structure and
+  framing.
+
+● Advising using Opus 4.8
+  ⎿  √ Advisor has reviewed the conversation and will apply the feedback
+     (ctrl+o to expand)
+
+● The advisor confirmed the structure and sharpened three requirements I'll
+  treat as mandatory: correct the "aware of all sessions" overclaim toward the
+  truth, make the causal break explicit (QR connects the phone; the disk is how
+  the daemon sees sessions), and keep the honest security caveats. I'll explain
+  the crypto handshake in one place and reference it from the other.
+
+  Writing all seven files now, into docs/understanding-paseo/ so they sit
+  alongside — not on top of — the existing developer docs.
+
+● Write(docs\understanding-paseo\index.md)
+  ⎿  Wrote 40 lines to docs\understanding-paseo\index.md
+      2 # Understanding Paseo
+      3 Paseo lets you run AI coding agents (Claude Code, Codex, and othe
+        one, another laptop, the terminal. This guide demystifies how tha
+        t works, in plain language, assuming no prior experience with thi
+      4 s kind of tool.
+      5 These docs are written for the curious newcomer who wants to *und
+        unning, the quickstart alone is enough.nds. If you only want it r
+      6
+      8 ---
+      9 ## Two ways to read this
+     … +53 lines (ctrl+o to expand)
+
+● Write(docs\understanding-paseo\key-concepts.md)
+  ⎿  Wrote 68 lines to docs\understanding-paseo\key-concepts.md
+      2 # Key concepts
+        s once and the rest will make sense. Terms are grouped by topic,
+      4 not alphabetized, so related ideas sit together.
+      5 ---
+      7 ## The core split
+      9 **Daemon** — A small program that runs quietly in the background
+        on your computer and does the actual work: starting agents, watch
+        r a background helper process that you don't interact with direct
+        ing else is a client. The daemon is the heart of Paseo; everythin
+        g else is a remote control for it.
+     … +150 lines (ctrl+o to expand)
+
+● Write(docs\understanding-paseo\what-is-paseo.md)
+  ⎿  Wrote 99 lines to docs\understanding-paseo\what-is-paseo.md
+      2 # What is Paseo?
+      3 Paseo is one program on your computer that runs AI coding agents,
+        at let you drive those agents from anywhere.desktop, terminal) th
+      4
+      5 That's the whole idea. The rest of this page builds the mental mo
+        t the picture. If a term is unfamiliar, it's defined in [key conc
+        epts](key-concepts.md).
+      7 ---
+      8
+      9 ## The problem it solves
+     … +172 lines (ctrl+o to expand)
+
+● Write(docs\understanding-paseo\quickstart.md)
+  ⎿  Wrote 174 lines to docs\understanding-paseo\quickstart.md
+      2 # Quickstart
+      3 Get Paseo installed and your phone connected to your computer's a
+        gents in about 10 minutes. Every command is copy-pasteable. Terms
+         in **bold** are defined in [key concepts](key-concepts.md).
+      4
+         Windows so the commands match).nux, and Windows (use Git Bash on
+      6
+      7 ---
+      8
+      9 ## Before you start
+     … +210 lines (ctrl+o to expand)
+
+● Write(docs\understanding-paseo\how-pairing-works.md)
+  ⎿  Wrote 83 lines to docs\understanding-paseo\how-pairing-works.md
+      2 # How pairing works
+      3 Scanning the QR code connects your phone to your computer's daemo
+        rver can read. This page explains exactly what happens, and why i
+        t's safe, in plain language.
+      5 This is the one place these docs explain the cryptography in full
+        . The [security](security.md) page focuses on the threat model an
+        d in [key concepts](key-concepts.md). Unfamiliar words are define
+      6
+      8 ---
+      9 ## First, the thing people get wrong
+     … +150 lines (ctrl+o to expand)
+
+● Now the centerpiece — the doc that answers your actual question. Written to
+  correct the "aware of all sessions" overclaim toward what the code actually
+  does.
+
+● Write(docs\understanding-paseo\how-paseo-finds-your-sessions.md)
+  ⎿  Wrote 108 lines to
+     docs\understanding-paseo\how-paseo-finds-your-sessions.md
+      2 # How Paseo finds your sessions
+      3 Paseo can show you coding chats you started yourself — like a `cl
+        se chats are saved as files on your disk, and the daemon reads th
+        em. There is nothing magic about it once you see where the files
+      4 live.
+      5 This is the mechanism people most often confuse with the QR code.
+         **bold** are defined in [key concepts](key-concepts.md).Terms in
+      6
+      8 ---
+      9 ## The misconception, corrected
+     … +160 lines (ctrl+o to expand)
+
+● Now the security doc — the full safety story in plain language, keeping the
+  honest caveats the advisor flagged, and referencing the pairing page for
+  crypto mechanics rather than re-explaining them.
+
+● Write(docs\understanding-paseo\security.md)
+  ⎿  Wrote 117 lines to docs\understanding-paseo\security.md
+      2 # Security
+        r phone can reach your daemon safely over the internet without yo
+        u opening any ports. This page explains what's protected automati
+        ults, and the honest limits of the current design.beyond the defa
+      4
+        — on a laptop, a home server, or a rented machine — not just run
+        . The cryptographic mechanics are explained once, in [how pairing
+         works](how-pairing-works.md); here we focus on the threat model
+      6 and the practical decisions.
+      7 This page i
+     … +188 lines (ctrl+o to expand)
+
+● All seven files written. Now Phase 4 — validate cross-links, check for stubs,
+  and confirm no orphans.
+
+● Bash(cd "C:\Users\simon\Downloads\paseo_brandon_melville\paseo-main\docs\under
+      standing-paseo" && echo "=== Files ===" && ls -1 && echo "" && echo "===
+      Stub/banned ch…)
+  ⎿  === Files ===
+     how-pairing-works.md
+     how-paseo-finds-your-sessions.md
+     … +16 lines (ctrl+o to expand)
+
+● Validation passed: all 7 files present, every internal link resolves to a real
+  file, the ../../SECURITY.md reference points at the repo-root file (which
+  exists), and no stubs or banned phrases.
+
+  ✓ Created 7 files in docs/understanding-paseo/
+  ✓ Cross-links verified (6 internal targets + 1 to repo-root SECURITY.md)
+  ✓ No stubs detected
+
+  Entry point:  docs/understanding-paseo/index.md
+  Onboarding:   docs/understanding-paseo/quickstart.md
+
+  What I wrote
+
+  ┌──────────────────────────────────┬───────────────────────────────────────┐
+  │               File               │          What it demystifies          │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │                                  │ Navigation hub with two routes: "just │
+  │ index.md                         │  want it running" vs "want to         │
+  │                                  │ understand the magic"                 │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │                                  │ The core mental model — one worker    │
+  │ what-is-paseo.md                 │ (daemon) + many remote controls       │
+  │                                  │ (clients)                             │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │ key-concepts.md                  │ Every term defined in plain English   │
+  │                                  │ before it's used anywhere else        │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │ quickstart.md                    │ Install → pair your phone → first     │
+  │                                  │ agent, ~10 min, with expected output  │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │                                  │ Your security interest #1 — exactly   │
+  │ how-pairing-works.md             │ what the QR carries and the           │
+  │                                  │ encryption handshake, step by step    │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │ how-paseo-finds-your-sessions.md │ Your "magic" question — why Paseo     │
+  │                                  │ knows about your Claude/Codex chats   │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │                                  │ Your security interest #2 — full      │
+  │ security.md                      │ safety model, what's automatic,       │
+  │                                  │ what's on you, honest limits          │
+  └──────────────────────────────────┴───────────────────────────────────────┘
+
+  ★ Insight ─────────────────────────────────────
+  The single idea that dissolves the "magic": Paseo is two halves that people
+  merge into one. The daemon is a background worker on your machine that runs
+  agents and can read files on your disk. Everything else — phone, web, desktop,
+  paseo CLI — is just a remote control.
+
+  So the two things you asked about are completely separate mechanisms that both
+  happen to involve the daemon:
+  - Scanning the QR connects your phone to the daemon over an encrypted channel.
+  It does not read your sessions.
+  - Knowing your sessions happens because claude/codex save every chat as files
+  on disk (~/.claude/projects/, ~/.codex/sessions/), and the daemon — running on
+  that same disk, as you — simply reads the recent ones when you ask. Adopting
+  one ("import") is a deliberate click, not automatic surveillance.
+
+  I traced both in the source: pairing in SECURITY.md +
+  packages/cli/src/commands/daemon/pair.ts; session discovery in
+  packages/server/src/server/agent/agent-manager.ts:615 fanning out to each
+  provider's listPersistedAgents(), which for Claude
+  (providers/claude/agent.ts:1357) literally opens ~/.claude/projects.
+  ─────────────────────────────────────────────────
+
+  One thing I deliberately corrected rather than echoed: the phrasing "Paseo is
+  aware of all my sessions." The code shows it lists your ~20 most recent
+  sessions on demand and filters out empties and already-imported ones — so the
+  docs say that, not the overclaim. Same spirit in security.md: I kept the
+  honest caveats (in-session replay protection isn't implemented yet; exposing
+  the daemon beyond your own machine is your responsibility) instead of sanding
+  them off.
+
+  Want me to also add a one-line pointer to this new guide from the main
+  README.md or the docs table in CLAUDE.md, so it's discoverable? That's the
+  only thing left to wire it into the rest of the repo.
+
+✻ Churned for 9m 28s
+
+※ recap: You wanted Paseo installed and explained. It's installed (CLI v0.1.90)   and I wrote a 7-file beginner guide in docs/understanding-paseo/ covering how   it works, pairing, session discovery, and security. Next: optionally link the
+  guide from README or CLAUDE.md. (disable recaps in /config)
+
+─────────────────────────────────────────────────────────────────────── paseo ──
+> 
+────────────────────────────────────────────────────────────────────────────────
+  | Opus 4.8 (1M context) | understanding-paseo | ctx 17% | 5h 16% | 7d 31% |
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+
+
+
+[
+i am not seeing the desktop app update in paseo on the phone now
+why ? it is not two way
+]
+
+
+[
+
+I control codex app from phone with paseo
+a file was created on local disk
+but codex app is not aware
+the iphone-paseo convo turns are not in desktop app context !!
+
+
+]
+
+
