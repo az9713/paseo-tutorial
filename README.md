@@ -4,7 +4,9 @@
 >
 > The new docs explain, in plain language with no prior experience assumed: the daemon-and-clients model, what *really* happens when you scan the QR code (pairing + end-to-end encryption), how Paseo discovers and imports the agent sessions already on your disk, why importing is not live mirroring, how to end and remove sessions, and the full security model.
 >
-> ### 👉 Start here: **[docs/understanding-paseo/](docs/understanding-paseo/index.md)**
+> ### 👉 Read it online: **https://az9713.github.io/paseo-tutorial/understanding-paseo/**
+>
+> Or browse the source Markdown in this repo: **[docs/understanding-paseo/](docs/understanding-paseo/index.md)**
 >
 > | Doc | What it demystifies |
 > | --- | ------------------- |
